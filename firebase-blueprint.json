@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "Problem": {
+      "title": "Problem",
+      "description": "문제 정보를 담는 엔티티",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "문제 고유 ID" },
+        "subject": { "type": "string", "description": "과목 (예: 한국사, 사회탐구 등)" },
+        "unit": { "type": "string", "description": "단원" },
+        "content": { "type": "string", "description": "문제 내용" },
+        "options": { "type": "array", "items": { "type": "string" }, "description": "보기" },
+        "answer": { "type": "string", "description": "정답" },
+        "explanation": { "type": "string", "description": "해설" },
+        "source": { "type": "string", "description": "출처 (예: 2026 수능, 사용자 업로드 등)" },
+        "type": { "type": "string", "enum": ["original", "generated"], "description": "원본 여부" },
+        "originalId": { "type": "string", "description": "유사 문제인 경우 원본 문제 ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "생성 일시" }
+      },
+      "required": ["subject", "unit", "content", "answer", "type", "createdAt"]
+    },
+    "GenerationLog": {
+      "title": "GenerationLog",
+      "description": "문제 생성 작업 로그",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "processing", "completed", "failed"] },
+        "message": { "type": "string" },
+        "progress": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "problems": {
+      "schema": "Problem",
+      "description": "문제 은행 컬렉션"
+    },
+    "logs": {
+      "schema": "GenerationLog",
+      "description": "작업 로그 컬렉션"
+    }
+  }
+}
