@@ -18,7 +18,9 @@ import {
   History,
   LayoutDashboard,
   Settings,
-  Filter
+  Filter,
+  Trash2,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -109,6 +111,8 @@ export default function App() {
   const [filter, setFilter] = useState({ subject: '', large_unit: '', source_id: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProblemIds, setSelectedProblemIds] = useState<string[]>([]);
+  const [problemToDelete, setProblemToDelete] = useState<string | null>(null);
+  const [currentPdfUrl, setCurrentPdfUrl] = useState<string | null>(null);
 
   // Auth Effect
   useEffect(() => {
@@ -169,8 +173,13 @@ export default function App() {
 
         // 4. 로컬 데이터 다시 불러와서 상태 업데이트
         setProblems(await getLocalProblems());
-      } catch (error) {
-        console.warn("Firebase sync failed (offline or quota exceeded), using local data only:", error);
+      } catch (error: any) {
+        if (error?.message?.includes('client is offline')) {
+          // 오프라인 상태는 로컬 우선 아키텍처에서 정상적인 상황이므로 경고 생략
+          console.log("Running in offline mode (local data only).");
+        } else {
+          console.warn("Firebase sync failed (offline or quota exceeded), using local data only:", error);
+        }
         // 동기화 실패해도 로컬 데이터로 계속 작동
       }
     };
@@ -187,9 +196,44 @@ export default function App() {
     }
   };
 
+  const executeDeleteProblem = async () => {
+    if (!problemToDelete) return;
+    const problemId = problemToDelete;
+    setProblemToDelete(null);
+    
+    console.log("Deleting problem:", problemId);
+    try {
+      // 1. 로컬 DB 삭제
+      await deleteProblem(problemId);
+      console.log("Local DB deleted");
+      
+      // 2. Firebase 삭제 (실패하더라도 로컬 삭제는 유지되도록 분리)
+      try {
+        const q = query(collection(db, 'problems'), where('__name__', '==', problemId));
+        const querySnapshot = await getDocs(q);
+        console.log("Firebase docs found:", querySnapshot.size);
+        for (const docSnap of querySnapshot.docs) {
+          await deleteDoc(docSnap.ref);
+          console.log("Firebase doc deleted:", docSnap.id);
+        }
+      } catch (fbError) {
+        console.warn("Firebase delete failed (offline or permission), but local data will be deleted:", fbError);
+      }
+      
+      // 3. 상태 업데이트
+      setProblems(prev => prev.filter(p => p.problem_id !== problemId));
+      console.log("State updated");
+    } catch (error) {
+      console.error("문제 삭제 실패:", error);
+    }
+  };
+
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const fileUrl = URL.createObjectURL(file);
+    setCurrentPdfUrl(fileUrl);
 
     setLoading(true);
     const logId = Date.now().toString();
@@ -267,8 +311,10 @@ export default function App() {
             await deleteProblem(localId); // 임시 로컬 ID 삭제
             
             setProblems(prev => prev.map(item => item.problem_id === localId ? finalProblem : item));
-          } catch (backupError) {
-            console.warn("Firebase backup failed (offline or quota exceeded), keeping local data:", backupError);
+          } catch (backupError: any) {
+            if (!backupError?.message?.includes('client is offline')) {
+              console.warn("Firebase backup failed (offline or quota exceeded), keeping local data:", backupError);
+            }
             // 백업 실패해도 로컬에는 남아있음
           }
         })();
@@ -292,6 +338,7 @@ export default function App() {
       });
     } finally {
       setLoading(false);
+      setCurrentPdfUrl(null);
       if (e.target) e.target.value = ''; // input 초기화
     }
   };
@@ -340,8 +387,10 @@ export default function App() {
               await deleteProblem(localId);
               
               setProblems(prev => prev.map(item => item.problem_id === localId ? finalProblem : item));
-            } catch (backupError) {
-              console.warn("Firebase backup failed for generated problem (offline or quota exceeded), keeping local data:", backupError);
+            } catch (backupError: any) {
+              if (!backupError?.message?.includes('client is offline')) {
+                console.warn("Firebase backup failed for generated problem (offline or quota exceeded), keeping local data:", backupError);
+              }
             }
           })();
         }
@@ -521,16 +570,53 @@ export default function App() {
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                className="space-y-6"
+                className="flex gap-6 h-full"
               >
-                <header>
-                  <h1 className="text-3xl font-bold text-gray-900">문제은행</h1>
-                  <p className="text-gray-500">과목별/단원별로 분류된 문제 목록</p>
-                </header>
+                {/* Tree Sidebar */}
+                <div className="w-64 bg-white p-6 rounded-2xl border border-gray-200 shadow-sm overflow-y-auto">
+                  <h2 className="text-lg font-bold text-gray-900 mb-6">분류 체계</h2>
+                  <div className="space-y-4">
+                    <button 
+                      onClick={() => setFilter({ subject: '', large_unit: '', source_id: '' })}
+                      className={`w-full text-left font-medium ${!filter.subject ? 'text-blue-600' : 'text-gray-600'}`}
+                    >
+                      전체 문제
+                    </button>
+                    {Object.entries(SUBJECT_STRUCTURE).map(([subject, units]) => (
+                      <div key={subject} className="space-y-2">
+                        <button 
+                          onClick={() => setFilter({ subject, large_unit: '', source_id: '' })}
+                          className={`w-full text-left font-semibold ${filter.subject === subject && !filter.large_unit ? 'text-blue-600' : 'text-gray-700'}`}
+                        >
+                          {subject}
+                        </button>
+                        <div className="pl-4 space-y-1">
+                          {units.map(unit => (
+                            <button 
+                              key={unit}
+                              onClick={() => setFilter({ subject, large_unit: unit, source_id: '' })}
+                              className={`w-full text-left text-sm ${filter.large_unit === unit ? 'text-blue-600' : 'text-gray-500'}`}
+                            >
+                              {unit}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
-                <div className="flex flex-wrap gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-sm">
-                  <div className="flex-1 min-w-[300px] relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                {/* Main Content */}
+                <div className="flex-1 space-y-6">
+                  <header>
+                    <h1 className="text-3xl font-bold text-gray-900">문제은행</h1>
+                    <p className="text-gray-500">
+                      {filter.subject ? `${filter.subject} ${filter.large_unit ? `> ${filter.large_unit}` : ''}` : '전체 문제 목록'}
+                    </p>
+                  </header>
+
+                  <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm relative">
+                    <Search className="absolute left-7 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input 
                       type="text" 
                       placeholder="문제 내용, 출처, 번호 검색..." 
@@ -539,59 +625,24 @@ export default function App() {
                       className="w-full pl-10 pr-4 py-2 bg-gray-50 border-none rounded-xl focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
-                  <div className="flex gap-2">
-                    <select 
-                      className="px-4 py-2 bg-gray-50 border-none rounded-xl focus:ring-2 focus:ring-blue-500 text-sm"
-                      value={filter.subject}
-                      onChange={(e) => setFilter({ ...filter, subject: e.target.value, large_unit: '', source_id: '' })}
-                    >
-                      <option value="">전체 분야</option>
-                      {Object.keys(SUBJECT_STRUCTURE).map(s => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                    {filter.subject && (
-                      <select 
-                        className="px-4 py-2 bg-gray-50 border-none rounded-xl focus:ring-2 focus:ring-blue-500 text-sm"
-                        value={filter.large_unit}
-                        onChange={(e) => setFilter({ ...filter, large_unit: e.target.value })}
-                      >
-                        <option value="">전체 과목</option>
-                        {SUBJECT_STRUCTURE[filter.subject].map(u => (
-                          <option key={u} value={u}>{u}</option>
-                        ))}
-                      </select>
-                    )}
-                    <select 
-                      className="px-4 py-2 bg-gray-50 border-none rounded-xl focus:ring-2 focus:ring-blue-500 text-sm"
-                      value={filter.source_id}
-                      onChange={(e) => setFilter({ ...filter, source_id: e.target.value })}
-                    >
-                      <option value="">전체 출처</option>
-                      {Array.from(new Set(problems.map(p => p.source_id).filter(Boolean))).map(s => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  {problems
-                    .filter(p => {
-                      const matchesSubject = !filter.subject || p.subject === filter.subject;
-                      const matchesUnit = !filter.large_unit || p.large_unit === filter.large_unit;
-                      const matchesExamSource = !filter.source_id || p.source_id === filter.source_id;
-                      const matchesSearch = !searchQuery || 
-                        p.problem_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        p.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        p.large_unit.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        p.source_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        p.problem_number?.toLowerCase().includes(searchQuery.toLowerCase());
-                      return matchesSubject && matchesUnit && matchesExamSource && matchesSearch;
-                    })
-                    .map((problem, idx) => (
-                    <ProblemCard key={problem.problem_id || idx} problem={problem} />
-                  ))}
+                  <div className="grid grid-cols-1 gap-4">
+                    {problems
+                      .filter(p => {
+                        const matchesSubject = !filter.subject || p.subject === filter.subject;
+                        const matchesUnit = !filter.large_unit || p.large_unit === filter.large_unit;
+                        const matchesSearch = !searchQuery || 
+                          p.problem_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.large_unit.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.source_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.problem_number?.toLowerCase().includes(searchQuery.toLowerCase());
+                        return matchesSubject && matchesUnit && matchesSearch;
+                      })
+                      .map((problem, idx) => (
+                      <ProblemCard key={problem.problem_id || idx} problem={problem} onDelete={(id) => setProblemToDelete(id)} />
+                    ))}
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -646,6 +697,13 @@ export default function App() {
                           </div>
                           <p className="text-sm text-gray-800 line-clamp-2">{p.problem_text}</p>
                         </div>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); setProblemToDelete(p.problem_id!); }}
+                          className="text-gray-400 hover:text-red-600 transition-colors"
+                          title="문제 삭제"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -678,9 +736,9 @@ export default function App() {
                   <FileUp className="w-12 h-12 text-blue-600 mx-auto mb-4" />
                   <h2 className="text-lg font-bold mb-2">PDF 파일 업로드</h2>
                   <p className="text-gray-500 mb-6">여러 개의 PDF 파일을 선택하세요.</p>
-                  <label className="px-6 py-3 bg-blue-600 text-white rounded-xl cursor-pointer hover:bg-blue-700 transition font-semibold">
-                    파일 선택
-                    <input type="file" className="hidden" accept=".pdf" multiple onChange={async (e) => {
+                  <label className={`px-6 py-3 text-white rounded-xl cursor-pointer transition font-semibold ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                    {loading ? '처리 중...' : '파일 선택'}
+                    <input type="file" className="hidden" accept=".pdf" multiple disabled={loading} onChange={async (e) => {
                       const files = e.target.files;
                       if (!files) return;
                       
@@ -701,6 +759,18 @@ export default function App() {
                     }} />
                   </label>
                 </div>
+
+                {currentPdfUrl && (
+                  <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                      <FileText className="w-5 h-5 text-blue-600" />
+                      현재 처리 중인 PDF
+                    </h3>
+                    <div className="w-full h-[600px] rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                      <embed src={`${currentPdfUrl}#toolbar=0&navpanes=0&scrollbar=0`} type="application/pdf" className="w-full h-full" />
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -752,6 +822,37 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {problemToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl"
+            >
+              <h3 className="text-lg font-bold text-gray-900 mb-2">문제 삭제</h3>
+              <p className="text-gray-600 mb-6">정말 이 문제를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.</p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setProblemToDelete(null)}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={executeDeleteProblem}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition"
+                >
+                  삭제
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </ErrorBoundary>
   );
 }
@@ -796,7 +897,7 @@ function StatusIcon({ status }: { status: GenerationLog['status'] }) {
   }
 }
 
-const ProblemCard: React.FC<{ problem: Problem }> = ({ problem }) => {
+const ProblemCard: React.FC<{ problem: Problem, onDelete: (id: string) => void }> = ({ problem, onDelete }) => {
   const [showExplanation, setShowExplanation] = useState(false);
 
   return (
@@ -806,23 +907,47 @@ const ProblemCard: React.FC<{ problem: Problem }> = ({ problem }) => {
       )}
       
       <div className="flex justify-between items-start gap-4">
-        <div className="flex flex-wrap gap-2">
-          <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[11px] font-bold rounded-lg uppercase tracking-wider">
-            {problem.subject}
-          </span>
-          <span className="px-2.5 py-1 bg-gray-100 text-gray-700 text-[11px] font-bold rounded-lg uppercase tracking-wider">
-            {problem.large_unit}
-          </span>
-          <span className={`px-2.5 py-1 text-[11px] font-bold rounded-lg uppercase tracking-wider ${
-            problem.source_type !== 'AI 생성' ? 'bg-green-50 text-green-700' : 'bg-purple-50 text-purple-700'
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex items-center text-[11px] font-bold rounded-lg uppercase tracking-wider bg-gray-100 text-gray-700 px-2.5 py-1.5 shadow-sm border border-gray-200">
+            <span className="text-blue-700">{problem.subject}</span>
+            {problem.large_unit && (
+              <>
+                <ChevronRight className="w-3 h-3 mx-1 text-gray-400" />
+                <span>{problem.large_unit}</span>
+              </>
+            )}
+            {problem.medium_unit && (
+              <>
+                <ChevronRight className="w-3 h-3 mx-1 text-gray-400" />
+                <span>{problem.medium_unit}</span>
+              </>
+            )}
+            {problem.small_unit && (
+              <>
+                <ChevronRight className="w-3 h-3 mx-1 text-gray-400" />
+                <span>{problem.small_unit}</span>
+              </>
+            )}
+          </div>
+          <span className={`px-2.5 py-1.5 text-[11px] font-bold rounded-lg uppercase tracking-wider shadow-sm border ${
+            problem.source_type !== 'AI 생성' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-purple-50 text-purple-700 border-purple-200'
           }`}>
             {problem.source_type !== 'AI 생성' ? '원본' : '유사문제'}
           </span>
         </div>
         <div className="text-right flex flex-col items-end">
-          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest bg-gray-50 px-2 py-0.5 rounded">
-            {problem.source_id || '출처 미상'}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest bg-gray-50 px-2 py-0.5 rounded">
+              {problem.source_id || '출처 미상'}
+            </span>
+            <button 
+              onClick={() => onDelete(problem.problem_id!)}
+              className="text-gray-400 hover:text-red-600 transition-colors"
+              title="문제 삭제"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
           <span className="text-2xl font-black text-gray-200 mt-1 select-none">
             #{problem.problem_number || '??'}
           </span>

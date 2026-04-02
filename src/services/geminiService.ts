@@ -47,7 +47,7 @@ const SUBJECT_HIERARCHY = `
 
 export async function generateSimilarProblems(originalProblem: Problem, count: number = 1): Promise<Problem[]> {
   const model = ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-3.1-flash-lite-preview",
     contents: `
       다음 원본 문제를 바탕으로 '평가원 스타일'의 유사 문제를 ${count}개 생성해줘.
       원본 문제의 핵심 원리와 난이도를 유지하면서, 수치나 상황을 적절히 변형해야 해.
@@ -116,7 +116,7 @@ export async function generateSimilarProblems(originalProblem: Problem, count: n
 
 export async function parsePdfToProblems(base64Pdf: string): Promise<Problem[]> {
   const model = ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-3.1-flash-lite-preview",
     contents: [
       {
         inlineData: {
